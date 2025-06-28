@@ -1,0 +1,143 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return request.auth.uid == userId;
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+    
+    function isModerator() {
+      return isAuthenticated() && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'moderator';
+    }
+    
+    function canModerateClub(clubId) {
+      return isAuthenticated() && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.clubMemberships[clubId] != null &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.clubMemberships[clubId].role in ['moderator', 'admin'];
+    }
+    
+    // Users collection
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isOwner(userId);
+      allow update: if isAuthenticated() && (isOwner(userId) || isAdmin());
+      allow delete: if isAdmin();
+    }
+    
+    // Events collection
+    match /events/{eventId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated() && (
+        isOwner(resource.data.createdBy) || 
+        isAdmin() || 
+        (isModerator() && resource.data.visibility == 'public')
+      );
+      allow delete: if isAuthenticated() && (
+        isOwner(resource.data.createdBy) || 
+        isAdmin()
+      );
+    }
+    
+    // Announcements collection
+    match /announcements/{announcementId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated() && (
+        isOwner(resource.data.createdBy) || 
+        isAdmin() || 
+        (isModerator() && resource.data.visibility == 'public')
+      );
+      allow delete: if isAuthenticated() && (
+        isOwner(resource.data.createdBy) || 
+        isAdmin()
+      );
+    }
+    
+    // Clubs collection
+    match /clubs/{clubId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated() && (
+        canModerateClub(clubId) || 
+        isAdmin()
+      );
+      allow delete: if isAdmin();
+    }
+    
+    // Club applications collection
+    match /club_applications/{applicationId} {
+      allow read: if isAuthenticated() && (
+        isOwner(resource.data.userId) || 
+        canModerateClub(resource.data.clubId) || 
+        isAdmin()
+      );
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated() && (
+        canModerateClub(resource.data.clubId) || 
+        isAdmin()
+      );
+      allow delete: if isAdmin();
+    }
+    
+    // Notifications collection
+    match /notifications/{notificationId} {
+      allow read: if isAuthenticated() && (
+        isOwner(resource.data.targetUserId) || 
+        isAdmin()
+      );
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated() && (
+        isOwner(resource.data.targetUserId) || 
+        isAdmin()
+      );
+      allow delete: if isAdmin();
+    }
+    
+    // Chat rooms collection
+    match /chat_rooms/{chatRoomId} {
+      // Users can see the list of public chat rooms, or rooms they are a member of.
+      allow list: if isAuthenticated();
+      
+      // Users can get a specific room if they are a member.
+      allow get: if isAuthenticated() && (request.auth.uid in resource.data.memberIds || isAdmin());
+      
+      // Any authenticated user can create a room.
+      allow create: if isAuthenticated();
+      
+      // Only members can update a room (e.g., its name).
+      allow update: if isAuthenticated() && (request.auth.uid in resource.data.memberIds || isAdmin());
+      
+      // Only admins can delete a room.
+      allow delete: if isAdmin();
+      
+      // Messages subcollection
+      match /messages/{messageId} {
+        // Only members of the chat room can read or write messages.
+        allow read, write: if isAuthenticated() && (request.auth.uid in get(/databases/$(database)/documents/chat_rooms/$(chatRoomId)).data.memberIds || isAdmin());
+        
+        // Users can only edit/delete their own messages. Admins can manage any.
+        allow update: if isAuthenticated() && (resource.data.senderId == request.auth.uid || isAdmin());
+        allow delete: if isAuthenticated() && (resource.data.senderId == request.auth.uid || isAdmin());
+      }
+    }
+    
+    // Messages collection (legacy - keeping for backward compatibility)
+    match /messages/{messageId} {
+      allow read, write: if isAuthenticated();
+    }
+  }
+} 
